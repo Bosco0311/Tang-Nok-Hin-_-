@@ -126,7 +126,7 @@ while True:
     y_val = joy_y.read()
 
     # 計算移動方向
-    deadzone = 500
+    deadzone = 1000
     player["dx"] = 0
     player["dy"] = 0
 
