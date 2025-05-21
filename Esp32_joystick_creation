@@ -38,6 +38,11 @@ MOVE_DELAY = 0.03
 BLOCK_SPEED = 0.5
 PLAYER_SPEED = 1  # 玩家速度保持不變
 
+# 初始死區值
+initial_deadzone = 1000
+min_deadzone = 100  # 最小死區值
+score_threshold = 5  # 每增加5分減少死區
+
 # ===== 初始化方塊 =====
 def init_blocks():
     for block in blocks:
@@ -121,24 +126,25 @@ while True:
             reset_game()
         continue
 
+    # 根據分數動態調整死區
+    deadzone = max(min_deadzone, initial_deadzone - (score // score_threshold) * 100)
+
     # 讀取搖桿數值
     x_val = joy_x.read()
     y_val = joy_y.read()
 
     # 計算移動方向
-    deadzone = 1000
     player["dx"] = 0
     player["dy"] = 0
 
-    # 只在遊戲進行時讀取搖桿數值
     if game_active:
-        if abs(x_val - 2048) > 200:
+        if abs(x_val - 2048) > deadzone:
             if x_val < 2048 - deadzone:
                 player["dx"] = -PLAYER_SPEED
             elif x_val > 2048 + deadzone:
                 player["dx"] = PLAYER_SPEED
 
-        if abs(y_val - 2048) > 200:
+        if abs(y_val - 2048) > deadzone:
             if y_val < 2048 - deadzone:
                 player["dy"] = -PLAYER_SPEED
             elif y_val > 2048 + deadzone:
