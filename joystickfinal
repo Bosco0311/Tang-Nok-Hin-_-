@@ -1,0 +1,235 @@
+from machine import Pin, I2C, ADC, PWM
+import ssd1306
+import time
+import random
+    
+# ===== Hardware Setup =====
+# OLED (I2C)
+i2c = I2C(0, scl=Pin(22), sda=Pin(21))
+oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+
+# Joystick (ADC)
+joy_x = ADC(Pin(34))
+joy_y = ADC(Pin(35))
+joy_x.atten(ADC.ATTN_11DB)
+joy_y.atten(ADC.ATTN_11DB)
+
+# Buzzer (PWM)
+buzzer = PWM(Pin(14), freq=1000, duty=0)
+
+# Start Button (GPIO16)
+start_btn = Pin(16, Pin.IN, Pin.PULL_UP)
+
+# LEDs
+led_pins = [Pin(17, Pin.OUT), Pin(18, Pin.OUT), Pin(19, Pin.OUT), Pin(23, Pin.OUT),
+            Pin(5, Pin.OUT), Pin(1, Pin.OUT), Pin(3, Pin.OUT), Pin(2, Pin.OUT)]
+
+# Relay (NC-COM mode)
+relay = Pin(4, Pin.OUT)
+relay.on()  # Start with motor OFF (NC open)
+motor_active = False
+motor_end_time = 0
+
+# ===== Game Parameters =====
+PLAYER_SIZE = 10
+BLOCK_SIZE = 10
+player = {"x": 64, "y": 54, "dx": 0, "dy": 0}
+blocks = [{"x": 0, "y": 0} for _ in range(5)]
+score = 0
+game_active = False
+last_score = 0
+WIN_SCORE = 0
+infinity_mode = False
+player_moves = 0
+
+# ===== Game Speed =====
+MOVE_DELAY = 0.03
+BLOCK_SPEED = 0.5
+PLAYER_SPEED = 1
+
+# ===== Functions =====
+def init_blocks():
+    for block in blocks:
+        block["x"] = random.randint(0, 127 - BLOCK_SIZE)
+        block["y"] = random.randint(-200, -50)
+
+def check_collision(rect1, rect2):
+    return (rect1["x"] < rect2["x"] + BLOCK_SIZE and
+            rect1["x"] + PLAYER_SIZE > rect2["x"] and
+            rect1["y"] < rect2["y"] + BLOCK_SIZE and
+            rect1["y"] + PLAYER_SIZE > rect2["y"])
+
+def game_over():
+    global game_active
+    if game_active:
+        game_active = False
+        oled.fill(0)
+        oled.text("GAME OVER", 20, 20)
+        oled.text(f"Score: {score}", 30, 40)
+        oled.show()
+        buzzer.duty(512)
+        time.sleep(0.5)
+        buzzer.duty(0)
+        time.sleep(2)
+
+def update_leds():
+    if WIN_SCORE == 45:
+        # For 45-point mode: light 1 LED every 5 points
+        for i in range(8):
+            led_pins[i].value(score >= (i + 1) * 5)
+    elif WIN_SCORE == 90:
+        # For 90-point mode: light 1 LED every 10 points
+        for i in range(8):
+            led_pins[i].value(score >= (i + 1) * 10)
+
+def activate_motor(duration):
+    global motor_active, motor_end_time
+    relay.off()  # Close NC circuit (motor ON)
+    motor_active = True
+    motor_end_time = time.time() + duration
+
+def win_sequence():
+    # Activate motor for 5 seconds
+    activate_motor(5)
+    oled.fill(0)
+    oled.text("YOU WIN!", 20, 20)
+    oled.text(f"Score: {score}", 20, 35)
+    oled.show()
+    for _ in range(10):
+        buzzer.duty(512)
+        time.sleep(0.2)
+        buzzer.duty(0)
+        time.sleep(0.1)
+
+def reset_game():
+    global score, BLOCK_SPEED, last_score, player_moves
+    relay.on()  # Ensure motor is OFF
+    score = 0
+    player_moves = 0
+    BLOCK_SPEED = 0.5
+    player["x"], player["y"] = 64, 54
+    init_blocks()
+    update_leds()
+    last_score = 0
+
+def show_start_screen():
+    oled.fill(0)
+    oled.text("Choose Win Score:", 0, 0)
+    oled.text("Push Up: 45", 15, 15)
+    oled.text("Push Down: 90", 15, 30)
+    oled.text("Click to Start", 0, 45)
+    oled.show()
+
+# ===== Main Loop =====
+while True:
+    current_time = time.time()
+    # Handle motor timeout
+    if motor_active and current_time >= motor_end_time:
+        relay.on()  # Open NC circuit (motor OFF)
+        motor_active = False
+
+    if not game_active:
+        show_start_screen()
+        
+        while not game_active:
+            y_val = joy_y.read()
+            
+            if y_val < 2048 - 2000:  # Up for 45
+                WIN_SCORE = 45
+                oled.fill(0)
+                oled.text("Win Score: 45", 15, 30)
+                oled.show()
+            elif y_val > 2048 + 2000:  # Down for 90
+                WIN_SCORE = 90
+                oled.fill(0)
+                oled.text("Win Score: 90", 15, 30)
+                oled.show()
+
+            if not start_btn.value():
+                game_active = True
+                reset_game()
+                time.sleep(1)
+        continue
+
+    # Read joystick
+    x_val = joy_x.read()
+    y_val = joy_y.read()
+
+    # Calculate movement
+    player["dx"] = 0
+    player["dy"] = 0
+    moved = False
+
+    if abs(x_val - 2048) > 100:  # Deadzone threshold
+        if x_val < 2048:
+            player["dx"] = -PLAYER_SPEED
+            moved = True
+        elif x_val > 2048:
+            player["dx"] = PLAYER_SPEED
+            moved = True
+
+    if abs(y_val - 2048) > 100:
+        if y_val < 2048:
+            player["dy"] = -PLAYER_SPEED
+            moved = True
+        elif y_val > 2048:
+            player["dy"] = PLAYER_SPEED
+            moved = True
+
+    # Count the move if player actually changed position
+    old_pos = (player["x"], player["y"])
+    player["x"] = max(0, min(128 - PLAYER_SIZE, player["x"] + player["dx"]))
+    player["y"] = max(0, min(64 - PLAYER_SIZE, player["y"] + player["dy"]))
+    
+    if moved and old_pos != (player["x"], player["y"]):
+        player_moves += 1
+
+    # Game logic
+    for block in blocks:
+        block["y"] += BLOCK_SPEED
+        if block["y"] >= 64:
+            block["y"] = random.randint(-50, -10)
+            block["x"] = random.randint(0, 127 - BLOCK_SIZE)
+            score += 1
+            
+            # Update LEDs based on current score
+            update_leds()
+            
+            # Motor activation based on win mode
+            if WIN_SCORE == 45 and score % 5 == 0:
+                activate_motor(2)  # 2 seconds for every 5 points
+                buzzer.duty(512)
+                time.sleep(0.1)
+                buzzer.duty(0)
+            elif WIN_SCORE == 90 and score % 10 == 0:
+                activate_motor(2)  # 2 seconds for every 10 points
+                buzzer.duty(512)
+                time.sleep(0.1)
+                buzzer.duty(0)
+
+            # Win condition
+            if WIN_SCORE > 0 and score >= WIN_SCORE:
+                win_sequence()
+                game_active = False
+
+    # Collision detection
+    for block in blocks:
+        if check_collision(player, block):
+            game_over()
+            break
+
+    # Display with your requested player style
+    oled.fill(0)
+    # Draw player with outline and inner fill
+    oled.fill_rect(player["x"], player["y"], PLAYER_SIZE, PLAYER_SIZE, 1)  # Outer rectangle
+    oled.fill_rect(player["x"] + 1, player["y"] + 1, PLAYER_SIZE - 2, PLAYER_SIZE - 2, 0)  # Inner rectangle
+    
+    # Draw blocks
+    for block in blocks:
+        oled.fill_rect(int(block["x"]), int(block["y"]), BLOCK_SIZE, BLOCK_SIZE, 1)
+    
+    # Draw score and moves
+    oled.text(f"Score: {score}", 0, 0)
+    oled.show()
+
+    time.sleep(MOVE_DELAY)
